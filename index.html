@@ -1,255 +1,164 @@
 <!DOCTYPE html>
-<footer class="text-center py-10">
-        <a href="admin.html" class="text-gray-300 hover:text-pink-400 text-[10px] transition-colors">Administrace</a>
-    </footer>
-</body>
-</html>
 <html lang="cs">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Mary Kay - Tvůj dárkový poukaz</title>
+    <title>MK Admin - Správa Rezervací</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=Montserrat:wght@300;400;600&display=swap" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;600&display=swap" rel="stylesheet">
     
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getFirestore, collection, addDoc, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, onSnapshot, doc, deleteDoc, updateDoc, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
 
-        const firebaseConfig = JSON.parse(__firebase_config);
+        const firebaseConfig = {
+          apiKey: "AIzaSyDlqIg_mBdte2-LltvcuuOdXFBrTVntrs0",
+          authDomain: "marykaypozvanka.firebaseapp.com",
+          projectId: "marykaypozvanka",
+          storageBucket: "marykaypozvanka.firebasestorage.app",
+          messagingSenderId: "545039603070",
+          appId: "1:545039603070:web:4db8a4d3b4fff548458f2f",
+          measurementId: "G-GP7CY3Y7QS"
+        };
+
         const app = initializeApp(firebaseConfig);
         const db = getFirestore(app);
         const auth = getAuth(app);
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'mary-kay-katerina-v3';
+        const appId = 'marykaypozvanka';
 
-        let userAuthenticated = false;
-        let slots = [];
-        let appointments = [];
-        let unsubSlots = null;
-        let unsubAppts = null;
+        let curYear, curMonth, selectedDate = null;
+        let slots = [], appointments = [];
+        let unsubSlots = null, unsubAppts = null;
+        let currentUser = null;
 
         const tToM = (t) => {
             const [h, m] = t.split(':').map(Number);
             return h * 60 + m;
         };
 
-        const initAuth = async () => {
-            try {
-                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                    await signInWithCustomToken(auth, __initial_auth_token);
-                } else {
-                    await signInAnonymously(auth);
-                }
-            } catch (err) { console.error("Auth Error:", err); }
-        };
-
         onAuthStateChanged(auth, (user) => {
-            if (user) {
-                userAuthenticated = true;
-                startSync();
-            } else {
-                userAuthenticated = false;
-                if (unsubSlots) unsubSlots();
-                if (unsubAppts) unsubAppts();
+            currentUser = user;
+            if (!user) {
+                signInAnonymously(auth).catch(err => console.error("Auth Error:", err));
             }
         });
 
-        initAuth();
+        window.checkPin = () => {
+            if (document.getElementById('admin-pin').value === "1234") {
+                document.getElementById('login-overlay').style.display = 'none';
+                startListening();
+            } else { alert("Špatný PIN!"); }
+        };
 
-        function startSync() {
-            if (!auth.currentUser) return;
-            const slotsRef = collection(db, 'artifacts', appId, 'public', 'data', 'slots');
-            const apptsRef = collection(db, 'artifacts', appId, 'public', 'data', 'appointments');
-
-            unsubSlots = onSnapshot(slotsRef, (s) => {
-                slots = []; s.forEach(d => slots.push(d.data()));
-                render();
-            }, (err) => console.error(err));
-
-            unsubAppts = onSnapshot(apptsRef, (s) => {
-                appointments = []; s.forEach(d => appointments.push(d.data().appointment));
-                render();
-            }, (err) => console.error(err));
+        function startListening() {
+            const n = new Date(); curYear = n.getFullYear(); curMonth = n.getMonth();
+            unsubSlots = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'slots'), (s) => {
+                slots = []; s.forEach(d => slots.push({id: d.id, ...d.data()}));
+                render(); if (selectedDate) renderGrid();
+            });
+            unsubAppts = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'appointments'), (s) => {
+                appointments = []; s.forEach(d => appointments.push({id: d.id, ...d.data()}));
+                render(); if (selectedDate) renderGrid();
+                renderList();
+            });
         }
 
         function render() {
-            const select = document.getElementById('time-select');
-            if (!select) return;
-
-            const available = slots.filter(slot => {
-                const label = `${new Date(slot.date).toLocaleDateString('cs-CZ')} v ${slot.time}`;
-                if (appointments.includes(label)) return false;
-
-                const isBlocked = appointments.some(apptLabel => {
-                    const [aDate, aTime] = apptLabel.split(' v ');
-                    if (aDate !== new Date(slot.date).toLocaleDateString('cs-CZ')) return false;
-                    const diff = tToM(slot.time) - tToM(aTime);
-                    return diff > 0 && diff <= 60;
-                });
-                return !isBlocked;
-            });
-
-            available.sort((a, b) => new Date(a.date + 'T' + a.time) - new Date(b.date + 'T' + b.time));
-
-            select.innerHTML = '<option value="">Vyberte si termín</option>';
-            if (available.length === 0) {
-                select.innerHTML = '<option value="">Momentálně nejsou volné žádné termíny</option>';
+            const grid = document.getElementById('cal-grid'); if(!grid) return; grid.innerHTML = '';
+            const fDay = new Date(curYear, curMonth, 1).getDay() || 7;
+            const days = new Date(curYear, curMonth + 1, 0).getDate();
+            document.getElementById('mon-label').innerText = new Intl.DateTimeFormat('cs-CZ', {month:'long', year:'numeric'}).format(new Date(curYear, curMonth));
+            for(let i=1; i<fDay; i++) grid.innerHTML += '<div></div>';
+            for(let d=1; d<=days; d++) {
+                const date = new Date(curYear, curMonth, d);
+                const dStr = date.toISOString().split('T')[0];
+                const isWE = date.getDay() === 0 || date.getDay() === 6;
+                const hasS = slots.some(s => s.date === dStr);
+                const isS = selectedDate === dStr;
+                const el = document.createElement('div');
+                el.className = `p-2 text-center text-xs rounded-lg cursor-pointer border ${isWE ? 'bg-gray-100 text-gray-300' : 'hover:bg-pink-50'} ${isS ? 'border-pink-500 ring-1 ring-pink-200' : 'border-transparent'} ${hasS && !isWE ? 'bg-pink-100 font-bold' : ''}`;
+                el.innerText = d;
+                if(!isWE) el.onclick = () => { selectedDate = dStr; render(); renderGrid(); };
+                grid.appendChild(el);
             }
+        }
 
-            available.forEach(s => {
-                const text = `${new Date(s.date).toLocaleDateString('cs-CZ')} v ${s.time}`;
-                const opt = document.createElement('option');
-                opt.value = text; opt.innerText = text;
-                select.appendChild(opt);
+        function renderGrid() {
+            const g = document.getElementById('time-grid'); if(!g) return; g.innerHTML = '';
+            const formattedDate = new Date(selectedDate).toLocaleDateString('cs-CZ');
+            document.getElementById('date-label').innerText = formattedDate;
+            for(let h=9; h<=17; h++) {
+                for(let m of ['00','15','30','45']) {
+                    if(h===17 && m!=='00') break;
+                    const t = `${h.toString().padStart(2,'0')}:${m}`;
+                    const label = `${formattedDate} v ${t}`;
+                    const isBooked = appointments.some(a => a.appointment === label);
+                    const isOpenStart = slots.some(s => s.date === selectedDate && s.time === t);
+                    const btn = document.createElement('button');
+                    btn.className = `p-2 text-[10px] rounded border transition-all ${isBooked ? 'bg-gray-800 text-white' : isOpenStart ? 'bg-pink-500 text-white shadow-md' : 'bg-white text-gray-600'}`;
+                    btn.innerText = isBooked ? 'REZE' : t;
+                    if(!isBooked) btn.onclick = () => toggle(selectedDate, t, isOpenStart);
+                    g.appendChild(btn);
+                }
+            }
+        }
+
+        async function toggle(d, t, status) {
+            const id = `${d}_${t.replace(':','')}`;
+            const ref = doc(db, 'artifacts', appId, 'public', 'data', 'slots', id);
+            if(status) await deleteDoc(ref); else await setDoc(ref, {date:d, time:t});
+        }
+
+        function renderList() {
+            const list = document.getElementById('admin-list'); if(!list) return; list.innerHTML = '';
+            const items = [...appointments].sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0));
+            items.forEach(d => {
+                const tr = document.createElement('tr');
+                tr.className = "border-b text-[11px]";
+                tr.innerHTML = `<td class="p-3"><b>${d.name}</b><br>${d.phone}</td>
+                    <td class="p-3 text-pink-600 font-bold">${d.appointment}</td>
+                    <td class="p-3">${d.withFriend ? '👥 Ano' : 'Sama'}</td>
+                    <td class="p-3 text-right"><button onclick="del('${d.id}')" class="text-red-400">SMAZAT</button></td>`;
+                list.appendChild(tr);
             });
         }
 
-        window.openEnvelope = () => {
-            document.getElementById('main-envelope').classList.add('open');
-            setTimeout(() => {
-                document.getElementById('envelope-stage').classList.add('hidden');
-                document.getElementById('voucher-stage').classList.remove('hidden');
-                document.getElementById('voucher-stage').classList.add('flex');
-                confetti({ particleCount: 100, spread: 70, origin: { y: 0.6 }, colors: ['#f1b2c3', '#e48da4'] });
-            }, 800);
-        };
-
-        window.toggleFriend = (c) => {
-            const f = document.getElementById('friend-fields');
-            f.classList.toggle('hidden', !c);
-            f.querySelectorAll('input').forEach(i => i.required = c);
-        };
-
-        window.handleBooking = async (e) => {
-            e.preventDefault();
-            if (!userAuthenticated) return;
-            const btn = e.target.querySelector('button');
-            btn.disabled = true; btn.innerText = "Odesílám...";
-            const formData = new FormData(e.target);
-            const data = {
-                name: formData.get('name'), phone: formData.get('phone'),
-                email: formData.get('email'), appointment: formData.get('appointment'),
-                note: formData.get('note'), withFriend: formData.get('with_friend') === 'on',
-                friendName: formData.get('friend_name') || null,
-                friendPhone: formData.get('friend_phone') || null,
-                emailed: false, outcome: 'none', createdAt: serverTimestamp()
-            };
-            try {
-                await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'appointments'), data);
-                document.getElementById('booking-form-container').classList.add('hidden');
-                document.getElementById('success-message').classList.remove('hidden');
-                confetti({ particleCount: 150, spread: 100 });
-            } catch (err) { alert("Chyba odeslání."); btn.disabled = false; }
-        };
+        window.del = async (id) => { if(confirm('Smazat?')) await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'appointments', id)); };
+        window.changeMon = (dir) => { curMonth += dir; if(curMonth<0){curMonth=11;curYear--;} if(curMonth>11){curMonth=0;curYear++;} render(); };
     </script>
-
-    <style>
-        :root { --mk-pink: #f1b2c3; --mk-dark-pink: #e48da4; }
-        body { font-family: 'Montserrat', sans-serif; background-color: #fdf2f4; }
-        .playfair { font-family: 'Playfair Display', serif; }
-        .envelope {
-            position: relative; width: 280px; height: 180px; background: var(--mk-dark-pink);
-            border-bottom-left-radius: 8px; border-bottom-right-radius: 8px; margin: 0 auto;
-            cursor: pointer; box-shadow: 0 15px 35px rgba(228, 141, 164, 0.3);
-        }
-        .envelope::before {
-            content: ''; position: absolute; top: 0; left: 0; z-index: 2;
-            border-left: 140px solid transparent; border-right: 140px solid transparent;
-            border-top: 100px solid var(--mk-dark-pink); transform-origin: top; transition: 0.6s ease-in-out;
-        }
-        .envelope.open::before { transform: rotateX(180deg); z-index: 0; }
-        .letter {
-            position: absolute; bottom: 0; left: 10%; width: 80%; height: 80%; background: white;
-            z-index: 1; display: flex; align-items: flex-end; justify-content: center; padding-bottom: 20px;
-        }
-        .btn-gradient { background: linear-gradient(135deg, #e48da4 0%, #f1b2c3 100%); transition: 0.3s; }
-        .form-input { border: 1px solid #eee; border-radius: 10px; padding: 12px; width: 100%; font-size: 0.9rem; }
-        .form-input:focus { outline: none; border-color: var(--mk-dark-pink); }
-    </style>
 </head>
-<body class="min-h-screen flex items-center justify-center p-4">
-
-    <div id="envelope-stage" class="text-center w-full max-w-md">
-        <h2 class="text-2xl mb-12 playfair italic text-gray-800 tracking-tight">Dárkový poukaz Mary Kay</h2>
-        <div class="envelope" id="main-envelope" onclick="openEnvelope()">
-            <div class="letter shadow-inner">
-                <div class="text-center">
-                    <p class="text-[14px] uppercase tracking-[0.4em] text-pink-400 font-bold mt-4">Mary Kay</p>
-                    <p class="text-[10px] text-gray-400 italic mt-1">Otevři mě</p>
-                </div>
-            </div>
-        </div>
-        <p class="mt-8 text-gray-400 text-xs animate-pulse uppercase tracking-widest">Klikni pro otevření</p>
-    </div>
-
-    <div id="voucher-stage" class="hidden w-full max-w-2xl bg-white/95 backdrop-blur-md rounded-3xl shadow-2xl overflow-hidden flex-col animate-in fade-in zoom-in duration-700 my-8">
-        <div class="h-2 bg-gradient-to-r from-pink-300 via-pink-100 to-pink-300"></div>
-        <div class="p-6 md:p-12">
-            <div class="text-center mb-10">
-                <span class="text-[10px] uppercase tracking-[0.5em] text-pink-400 font-bold mb-3 block">Exkluzivní Pozvání</span>
-                <h1 class="text-4xl md:text-5xl playfair font-bold text-gray-800 mb-2 leading-tight">Dárkový poukaz</h1>
-                <p class="text-gray-500 italic text-sm">Věnuj čas sama sobě a své péči.</p>
-            </div>
-
-            <div class="grid md:grid-cols-2 gap-8 py-8 border-y border-pink-50 mb-10">
-                <div class="space-y-4 text-sm">
-                    <h3 class="text-[10px] font-bold uppercase tracking-widest text-gray-400">Co tě čeká:</h3>
-                    <ul class="space-y-2">
-                        <li>✨ Bezplatná konzultace</li>
-                        <li>🌿 Péče o pleť na míru</li>
-                        <li>💄 Dekorativní kosmetika</li>
-                        <li class="text-pink-600 font-bold">🎁 Dárek zdarma</li>
-                    </ul>
-                </div>
-                <div class="bg-pink-50/40 p-6 rounded-2xl border border-pink-100/50 flex flex-col justify-between">
-                    <div>
-                        <p class="text-[10px] text-gray-400 uppercase font-bold mb-1">Místo:</p>
-                        <p class="text-sm font-bold text-gray-800">Hotel Palác, 1. máje 25, Olomouc</p>
-                        <a href="https://www.google.com/maps/search/?api=1&query=Hotel+Palác+Olomouc+1.+máje+25" target="_blank" class="text-[10px] text-pink-500 underline mt-2 block font-bold uppercase">Zobrazit na mapě 📍</a>
-                    </div>
-                    <div class="mt-4 pt-4 border-t border-pink-100">
-                        <p class="text-[10px] text-gray-400 uppercase font-bold mb-1">Poradkyně:</p>
-                        <p class="playfair text-lg italic text-pink-600">Kateřina Vychodilová</p>
-                        <p class="text-xs text-gray-500">Tel: 776 164 298</p>
-                    </div>
-                </div>
-            </div>
-
-            <div id="booking-form-container">
-                <form onsubmit="handleBooking(event)" class="space-y-4">
-                    <div class="grid md:grid-cols-2 gap-4">
-                        <input name="name" type="text" placeholder="Tvé jméno" required class="form-input">
-                        <input name="phone" type="tel" placeholder="Tvůj telefon" required class="form-input">
-                    </div>
-                    <input name="email" type="email" placeholder="Tvůj e-mail" required class="form-input">
-                    <select id="time-select" name="appointment" required class="form-input">
-                        <option value="">Načítám volné časy...</option>
-                    </select>
-                    <div class="p-4 bg-gray-50 rounded-2xl border border-gray-100">
-                        <label class="flex items-center space-x-3 cursor-pointer">
-                            <input type="checkbox" name="with_friend" onchange="toggleFriend(this.checked)" class="w-5 h-5 accent-pink-500">
-                            <span class="text-sm font-semibold text-gray-700">Přijdu s kamarádkou </span>
-                        </label>
-                        <div id="friend-fields" class="hidden mt-4 space-y-3">
-                            <input name="friend_name" type="text" placeholder="Jméno kamarádky" class="form-input bg-white">
-                            <input name="friend_phone" type="tel" placeholder="Telefon kamarádky" class="form-input bg-white">
-                        </div>
-                    </div>
-                    <textarea name="note" placeholder="Prostor pro případné dotazy" rows="2" class="form-input"></textarea>
-                    <button type="submit" class="w-full py-4 rounded-xl text-white font-bold uppercase tracking-widest text-xs btn-gradient shadow-lg">Potvrdit rezervaci</button>
-                </form>
-            </div>
-
-            <div id="success-message" class="hidden text-center py-10 animate-bounce">
-                <div class="w-16 h-16 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto mb-4">
-                    <svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
-                </div>
-                <h2 class="text-2xl playfair font-bold text-gray-800">Rezervováno!</h2>
-                <p class="text-sm text-gray-600 italic">Děkuji za zájem. Moc se na tebe těším!</p>
-            </div>
+<body class="bg-gray-50 font-[Montserrat] min-h-screen text-gray-800">
+    <div id="login-overlay" class="fixed inset-0 bg-pink-600 flex items-center justify-center z-[100] p-4">
+        <div class="bg-white p-8 rounded-3xl shadow-2xl w-full max-w-sm text-center">
+            <h1 class="text-2xl font-bold mb-6 text-pink-600 italic">MK Admin</h1>
+            <input id="admin-pin" type="password" placeholder="PIN 1234" class="w-full p-4 border rounded-xl mb-4 text-center text-2xl outline-none">
+            <button onclick="checkPin()" class="w-full py-4 bg-pink-600 text-white rounded-xl font-bold">Vstoupit</button>
         </div>
     </div>
+    <main class="max-w-7xl mx-auto p-4 grid lg:grid-cols-12 gap-6">
+        <div class="lg:col-span-4 space-y-6">
+            <div class="bg-white p-5 rounded-3xl shadow border">
+                <div class="flex items-center justify-between mb-4">
+                    <button onclick="changeMon(-1)">&lt;</button>
+                    <h2 id="mon-label" class="font-bold">Leden</h2>
+                    <button onclick="changeMon(1)">&gt;</button>
+                </div>
+                <div id="cal-grid" class="grid grid-cols-7 gap-1 text-[10px]"></div>
+            </div>
+            <div class="bg-white p-5 rounded-3xl shadow border">
+                <h3 class="font-bold text-sm mb-4">Časy: <span id="date-label" class="text-pink-500">-</span></h3>
+                <div id="time-grid" class="grid grid-cols-4 gap-2"></div>
+            </div>
+        </div>
+        <div class="lg:col-span-8 bg-white rounded-3xl shadow overflow-hidden border">
+            <table class="w-full text-left">
+                <thead class="bg-gray-50 text-[10px] uppercase font-bold text-gray-400 border-b">
+                    <tr><th class="p-3">Zákaznice</th><th class="p-3">Termín</th><th class="p-3">Doprovod</th><th class="p-3"></th></tr>
+                </thead>
+                <tbody id="admin-list" class="divide-y divide-gray-50"></tbody>
+            </table>
+        </div>
+    </main>
 </body>
 </html>
