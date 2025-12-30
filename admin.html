@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<body class="bg-gray-50 font-[Montserrat] min-h-screen text-gray-800">
+    <div class="max-w-7xl mx-auto px-4 pt-4">
+        <a href="index.html" class="text-[10px] text-gray-400 hover:text-pink-600">← Zpět na web pro klientky</a>
+    </div>
+<html lang="cs">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MK Admin - Správa Rezervací</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;600&display=swap" rel="stylesheet">
+    
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getFirestore, collection, onSnapshot, doc, deleteDoc, updateDoc, setDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const auth = getAuth(app);
+        const appId = 'mary-kay-katerina-v3';
+
+        let curYear, curMonth, selectedDate = null;
+        let slots = [], appointments = [];
+        let unsubSlots = null, unsubAppts = null;
+        let currentUser = null;
+
+        const tToM = (t) => {
+            const [h, m] = t.split(':').map(Number);
+            return h * 60 + m;
+        };
+
+        const initAuth = async () => {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (err) { console.error("Auth Error:", err); }
+        };
+
+        onAuthStateChanged(auth, (user) => {
+            currentUser = user;
+            if (!user) {
+                if (unsubSlots) unsubSlots();
+                if (unsubAppts) unsubAppts();
+            }
+        });
+
+        initAuth();
+
+        window.checkPin = () => {
+            if (document.getElementById('admin-pin').value === "1234") {
+                document.getElementById('login-overlay').style.display = 'none';
+                startListening();
+            } else { alert("Špatný PIN!"); }
+        };
+
+        function startListening() {
+            if (!currentUser) { setTimeout(startListening, 500); return; }
+            const n = new Date(); curYear = n.getFullYear(); curMonth = n.getMonth();
+            
+            unsubSlots = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'slots'), (s) => {
+                slots = []; s.forEach(d => slots.push({id: d.id, ...d.data()}));
+                render(); if (selectedDate) renderGrid();
+            }, (err) => console.error(err));
+
+            unsubAppts = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'appointments'), (s) => {
+                appointments = []; s.forEach(d => appointments.push({id: d.id, ...d.data()}));
+                render(); if (selectedDate) renderGrid();
+                renderList();
+            }, (err) => console.error(err));
+        }
+
+        function render() {
+            const grid = document.getElementById('cal-grid'); if(!grid) return; grid.innerHTML = '';
+            const fDay = new Date(curYear, curMonth, 1).getDay() || 7;
+            const days = new Date(curYear, curMonth + 1, 0).getDate();
+            document.getElementById('mon-label').innerText = new Intl.DateTimeFormat('cs-CZ', {month:'long', year:'numeric'}).format(new Date(curYear, curMonth));
+            
+            for(let i=1; i<fDay; i++) grid.innerHTML += '<div></div>';
+            for(let d=1; d<=days; d++) {
+                const date = new Date(curYear, curMonth, d);
+                const dStr = date.toISOString().split('T')[0];
+                const isWE = date.getDay() === 0 || date.getDay() === 6;
+                const hasS = slots.some(s => s.date === dStr);
+                const isS = selectedDate === dStr;
+                const el = document.createElement('div');
+                el.className = `p-2 text-center text-xs rounded-lg cursor-pointer border ${isWE ? 'bg-gray-100 text-gray-300' : 'hover:bg-pink-50'} ${isS ? 'border-pink-500 ring-1 ring-pink-200' : 'border-transparent'} ${hasS && !isWE ? 'bg-pink-100 font-bold' : ''}`;
+                el.innerText = d;
+                if(!isWE) el.onclick = () => { selectedDate = dStr; render(); renderGrid(); };
+                grid.appendChild(el);
+            }
+        }
+
+        function renderGrid() {
+            const g = document.getElementById('time-grid'); if(!g) return; g.innerHTML = '';
+            const formattedSelectedDate = new Date(selectedDate).toLocaleDateString('cs-CZ');
+            document.getElementById('date-label').innerText = formattedSelectedDate;
+
+            for(let h=9; h<=17; h++) {
+                for(let m of ['00','15','30','45']) {
+                    if(h===17 && m!=='00') break;
+                    const t = `${h.toString().padStart(2,'0')}:${m}`;
+                    const label = `${formattedSelectedDate} v ${t}`;
+                    
+                    const isBooked = appointments.some(a => a.appointment === label);
+                    const isOpenStart = slots.some(s => s.date === selectedDate && s.time === t);
+                    
+                    const isBlockedByAppointment = appointments.some(a => {
+                        const [aD, aT] = a.appointment.split(' v ');
+                        if(aD !== formattedSelectedDate) return false;
+                        const diff = tToM(t) - tToM(aT);
+                        return diff > 0 && diff < 60; 
+                    });
+
+                    const isBlockedByOtherOpen = slots.some(s => {
+                        if(s.date !== selectedDate || s.time === t) return false;
+                        const diff = tToM(t) - tToM(s.time);
+                        return diff > 0 && diff < 60;
+                    });
+
+                    const btn = document.createElement('button');
+                    const isForbidden = isBooked || isBlockedByAppointment || (isBlockedByOtherOpen && !isOpenStart);
+                    
+                    btn.className = `p-2 text-[10px] rounded border transition-all font-semibold 
+                        ${isBooked ? 'bg-gray-800 text-white' : 
+                          isBlockedByAppointment || isBlockedByOtherOpen ? 'bg-gray-200 text-gray-400 border-gray-300' : 
+                          isOpenStart ? 'bg-pink-500 text-white border-pink-600 shadow-md' : 'bg-white hover:border-pink-300 text-gray-600'}`;
+                    
+                    btn.innerText = isBooked ? 'REZE' : (isBlockedByAppointment || isBlockedByOtherOpen) ? 'BLOK' : t;
+                    
+                    if(!isForbidden || isOpenStart) {
+                        btn.onclick = () => toggle(selectedDate, t, isOpenStart);
+                    }
+                    g.appendChild(btn);
+                }
+            }
+        }
+
+        async function toggle(d, t, status) {
+            if (!currentUser) return;
+            const id = `${d}_${t.replace(':','')}`;
+            const ref = doc(db, 'artifacts', appId, 'public', 'data', 'slots', id);
+            try {
+                if(status) await deleteDoc(ref); else await setDoc(ref, {date:d, time:t});
+            } catch (err) { console.error("Toggle Error:", err); }
+        }
+
+        function renderList() {
+            const list = document.getElementById('admin-list'); if(!list) return; list.innerHTML = '';
+            let s=0, r=0;
+            const items = [...appointments];
+            items.sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0));
+            items.forEach(d => {
+                if(d.outcome==='purchased') s++; if(d.outcome==='registered') r++;
+                const tr = document.createElement('tr');
+                tr.className = "border-b text-[11px] hover:bg-gray-50";
+                tr.innerHTML = `<td class="p-3"><b>${d.name||'Anonym'}</b><br><span class="text-gray-400 text-[9px]">${d.phone||'-'}</span></td>
+                    <td class="p-3 font-bold text-pink-600">${d.appointment}</td>
+                    <td class="p-3">${d.withFriend ? `👥 ${d.friendName}` : '<span class="text-gray-300 italic">Sama</span>'}</td>
+                    <td class="p-3 text-center"><input type="checkbox" ${d.emailed ? 'checked' : ''} onchange="upd('${d.id}','emailed',this.checked)" class="accent-pink-500 w-4 h-4 cursor-pointer"></td>
+                    <td class="p-3"><select onchange="upd('${d.id}','outcome',this.value)" class="text-[9px] border rounded bg-white p-1 w-full outline-none">
+                        <option value="none" ${d.outcome==='none'?'selected':''}>-</option>
+                        <option value="purchased" ${d.outcome==='purchased'?'selected':''}>Nákup 🛍️</option>
+                        <option value="registered" ${d.outcome==='registered'?'selected':''}>Reg. ✨</option>
+                    </select></td>
+                    <td class="p-3 text-right"><button onclick="del('${d.id}')" class="text-red-300 hover:text-red-500 font-bold transition-colors">SMAZAT</button></td>`;
+                list.appendChild(tr);
+            });
+            document.getElementById('stat-total').innerText = items.length;
+            document.getElementById('stat-success').innerText = items.length > 0 ? Math.round(((s+r)/items.length)*100)+"%" : "0%";
+        }
+
+        window.upd = async (id, f, v) => { await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'appointments', id), {[f]:v}); };
+        window.del = async (id) => { if(confirm('Opravdu smazat?')) await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'appointments', id)); };
+        window.changeMon = (dir) => { curMonth += dir; if(curMonth<0){curMonth=11;curYear--;} if(curMonth>11){curMonth=0;curYear++;} render(); };
+    </script>
+</head>
+<body class="bg-gray-50 font-[Montserrat] min-h-screen text-gray-800">
+    <div id="login-overlay" class="fixed inset-0 bg-pink-600 flex items-center justify-center z-[100] p-4">
+        <div class="bg-white p-8 rounded-3xl shadow-2xl w-full max-w-sm text-center">
+            <h1 class="text-2xl font-bold mb-6 text-pink-600 italic">Kateřina - MK Admin</h1>
+            <input id="admin-pin" type="password" placeholder="PIN 1234" class="w-full p-4 border rounded-xl mb-4 text-center text-2xl tracking-[1em] outline-none focus:ring-2 focus:ring-pink-200">
+            <button onclick="checkPin()" class="w-full py-4 bg-pink-600 text-white rounded-xl font-bold shadow-lg hover:bg-pink-700 transition-all">Vstoupit</button>
+        </div>
+    </div>
+
+    <header class="bg-white border-b p-4 sticky top-0 z-10 shadow-sm flex items-center justify-between">
+        <h1 class="font-bold text-pink-600 italic text-lg">Moje MK Studio</h1>
+        <div class="flex space-x-6 text-center">
+            <div><span id="stat-total" class="block font-bold text-lg leading-tight text-gray-800">0</span><span class="text-[8px] uppercase text-gray-400 font-bold tracking-widest">Rezervací</span></div>
+            <div class="text-green-600"><span id="stat-success" class="block font-bold text-lg leading-tight">0%</span><span class="text-[8px] uppercase text-gray-400 font-bold tracking-widest text-green-400">Úspěšnost</span></div>
+        </div>
+    </header>
+
+    <main class="max-w-7xl mx-auto p-4 md:p-6 grid lg:grid-cols-12 gap-6">
+        <div class="lg:col-span-4 space-y-6">
+            <div class="bg-white p-5 rounded-3xl shadow-md border">
+                <div class="flex items-center justify-between mb-4">
+                    <button onclick="changeMon(-1)" class="text-pink-500 font-bold px-3 py-1 hover:bg-pink-50 rounded-full transition-colors">&lt;</button>
+                    <h2 id="mon-label" class="font-bold text-sm uppercase tracking-wider text-gray-600">Leden 2024</h2>
+                    <button onclick="changeMon(1)" class="text-pink-500 font-bold px-3 py-1 hover:bg-pink-50 rounded-full transition-colors">&gt;</button>
+                </div>
+                <div id="cal-grid" class="grid grid-cols-7 gap-1 text-[10px]"></div>
+                <div class="mt-4 pt-4 border-t border-gray-50 flex items-center space-x-3">
+                    <div class="w-3 h-3 bg-pink-100 rounded border border-pink-200"></div>
+                    <span class="text-[10px] text-gray-500 font-medium">Dny s otevřenými termíny</span>
+                </div>
+            </div>
+
+            <div class="bg-white p-5 rounded-3xl shadow-md border">
+                <h3 class="font-bold text-sm mb-4 border-b pb-2">Hodinové sezení: <span id="date-label" class="text-pink-500">-</span></h3>
+                <div id="time-grid" class="grid grid-cols-4 gap-2"></div>
+                <div class="mt-4 p-3 bg-gray-50 rounded-xl text-[9px] text-gray-400 space-y-2 leading-relaxed">
+                    <p>• <b>Kliknutím na čas</b> ho otevřeš pro zákaznice (zrůžoví).</p>
+                    <p>• <b>BLOK</b> = Automaticky zablokováno pro probíhající konzultaci (60 min).</p>
+                    <p>• <b>REZE</b> = Již zarezervováno.</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="lg:col-span-8">
+            <div class="bg-white rounded-3xl shadow-md overflow-hidden border">
+                <div class="p-4 bg-gray-50 border-b flex justify-between items-center text-gray-500">
+                    <h2 class="font-bold text-xs uppercase tracking-widest">Přehled rezervací</h2>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left">
+                        <thead class="bg-gray-50 text-[10px] uppercase font-bold text-gray-400 border-b">
+                            <tr><th class="p-3">Zákaznice</th><th class="p-3">Termín</th><th class="p-3">Doprovod</th><th class="p-3 text-center">E-mail?</th><th class="p-3">Výsledek</th><th class="p-3"></th></tr>
+                        </thead>
+                        <tbody id="admin-list" class="divide-y divide-gray-50"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </main>
+</body>
+</html>
